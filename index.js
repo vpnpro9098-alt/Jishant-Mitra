@@ -79,6 +79,16 @@ Aapke rules:
 6. Foundation scope se bahar ki cheezein politely decline karo
 7. Har jawab ke end mein ek follow-up question ya CTA do`;
 
+// Rate limiting
+const lastRequest = new Map();
+
+function canMakeRequest(userId) {
+  const now = Date.now();
+  const last = lastRequest.get(userId) || 0;
+  if (now - last < 3000) return false; // 3 second gap
+  lastRequest.set(userId, now);
+  return true;
+}
 // =============================================
 // AI RESPONSE GENERATOR (Direct REST API - No SDK)
 // =============================================
