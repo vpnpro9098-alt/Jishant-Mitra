@@ -1,16 +1,9 @@
 require("dotenv").config();
 const express = require("express");
 const axios = require("axios");
-const { GoogleGenerativeAI } = require("@google/generative-ai");
 
 const app = express();
 app.use(express.json());
-
-// =============================================
-// GEMINI AI SETUP
-// =============================================
-const genAI = new GoogleGenerativeAI(process.env.GEMINI_API_KEY);
-const model = genAI.getGenerativeModel({ model: "gemini-1.5-flash" });
 
 // =============================================
 // CONVERSATION MEMORY (In-memory store)
@@ -87,31 +80,56 @@ Aapke rules:
 7. Har jawab ke end mein ek follow-up question ya CTA do`;
 
 // =============================================
-// AI RESPONSE GENERATOR
+// AI RESPONSE GENERATOR (Direct REST API - No SDK)
 // =============================================
 async function getAIResponse(userId, userMessage) {
   try {
     const history = getHistory(userId);
-    
-    const chat = model.startChat({
-      history: history,
-      generationConfig: {
-        maxOutputTokens: 300,
-        temperature: 0.7,
-      },
-      systemInstruction: SYSTEM_PROMPT,
-    });
 
-    const result = await chat.sendMessage(userMessage);
-    const response = result.response.text();
-    
+    // Build contents array from history
+    const contents = [];
+    for (const h of history) {
+      contents.push({ role: h.role, parts: h.parts });
+    }
+    contents.push({ role: "user", parts: [{ text: userMessage }] });
+
+    const response = await axios.post(
+      `https://generativelanguage.googleapis.com/v1beta/models/gemini-2.0-flash:generateContent?key=${process.env.GEMINI_API_KEY}`,
+      {
+        contents: contents,
+        systemInstruction: { parts: [{ text: SYSTEM_PROMPT }] },
+        generationConfig: {
+          maxOutputTokens: 300,
+          temperature: 0.7,
+        },
+      },
+      { headers: { "Content-Type": "application/json" } }
+    );
+
+    const reply = response.data?.candidates?.[0]?.content?.parts?.[0]?.text;
+
+    if (!reply) {
+      console.error("Empty Gemini response:", JSON.stringify(response.data));
+      return "Maafi chahta hoon, jawab nahi aa raha. Dobara try karein! 🙏";
+    }
+
     // Save to memory
     addToHistory(userId, "user", userMessage);
-    addToHistory(userId, "model", response);
-    
-    return response;
+    addToHistory(userId, "model", reply);
+
+    return reply;
+
   } catch (error) {
-    console.error("Gemini Error:", error.message);
+    const errMsg = error.response?.data?.error?.message || error.message;
+    console.error("❌ Gemini Error:", errMsg);
+
+    if (errMsg.includes("API_KEY_INVALID") || errMsg.includes("API key")) {
+      return "Bot config mein issue hai. Admin se contact karein: info@jishantfoundation.com 🙏";
+    }
+    if (errMsg.includes("quota") || errMsg.includes("RESOURCE_EXHAUSTED")) {
+      return "Abhi bahut saare messages aa rahe hain. 1 minute baad dobara try karein! ⏳";
+    }
+
     return "Maafi chahta hoon, abhi thodi technical dikkat aa rahi hai. 🙏 Kripya thodi der baad try karein ya humein email karein: info@jishantfoundation.com";
   }
 }
@@ -161,9 +179,9 @@ async function sendWelcomeMessage(to, name) {
           },
           action: {
             buttons: [
-              { type: "reply", reply: { id: "donate", title: "💛 Donate Karna Hai" } },
-              { type: "reply", reply: { id: "volunteer", title: "🙋 Volunteer Banna Hai" } },
-              { type: "reply", reply: { id: "internship", title: "🎓 Internship Chahiye" } },
+              { type: "reply", reply: { id: "donate", title: "Donate Karna Hai" } },
+              { type: "reply", reply: { id: "volunteer", title: "Volunteer Banna Hai" } },
+              { type: "reply", reply: { id: "internship", title: "Internship Chahiye" } },
             ],
           },
         },
@@ -228,18 +246,16 @@ app.post("/webhook", async (req, res) => {
     if (!messages || messages.length === 0) return;
 
     const msg = messages[0];
-    const from = msg.from; // User's phone number
+    const from = msg.from;
     const userName = value?.contacts?.[0]?.profile?.name || "Dost";
 
     console.log(`📩 Message from ${from} (${userName})`);
 
     let userText = "";
 
-    // Handle different message types
     if (msg.type === "text") {
       userText = msg.text.body.trim();
     } else if (msg.type === "interactive") {
-      // Button reply
       const buttonId = msg.interactive?.button_reply?.id;
       userText = QUICK_REPLIES[buttonId] || msg.interactive?.button_reply?.title || "";
     } else if (msg.type === "audio" || msg.type === "voice") {
@@ -252,7 +268,6 @@ app.post("/webhook", async (req, res) => {
 
     if (!userText) return;
 
-    // Greeting detection — send welcome with buttons
     const greetings = ["hi", "hello", "namaste", "namaskar", "hey", "hii", "helo", "start", "help"];
     const isGreeting = greetings.some(g => userText.toLowerCase().includes(g)) && userText.length < 15;
 
@@ -261,7 +276,6 @@ app.post("/webhook", async (req, res) => {
       return;
     }
 
-    // Get AI response
     console.log(`💬 User: ${userText}`);
     const aiReply = await getAIResponse(from, userText);
     console.log(`🤖 Bot: ${aiReply.substring(0, 80)}...`);
@@ -274,7 +288,7 @@ app.post("/webhook", async (req, res) => {
 });
 
 // =============================================
-// HEALTH CHECK ROUTE
+// HEALTH CHECK
 // =============================================
 app.get("/", (req, res) => {
   res.json({
@@ -301,7 +315,7 @@ app.listen(PORT, () => {
    Jishant Social Foundation
 🌿 =====================================
 ✅ Server running on port ${PORT}
-🤖 AI: Google Gemini 1.5 Flash
+🤖 AI: Google Gemini 2.0 Flash (REST API)
 📱 WhatsApp: Meta Cloud API
 🕐 ${new Date().toLocaleString("en-IN", { timeZone: "Asia/Kolkata" })}
 =====================================
